@@ -1,0 +1,83 @@
+plugins {
+    id "io.github.goooler.shadow" version "8.1.7"
+    id 'java'
+}
+
+group = 'com.person98'
+version = '1.0'
+
+repositories {
+    mavenCentral()
+    maven {
+        name = "papermc-repo"
+        url = "https://repo.papermc.io/repository/maven-public/"
+    }
+    maven {
+        name = "sonatype"
+        url = "https://oss.sonatype.org/content/groups/public/"
+    }
+
+    maven { url = "https://repo.aikar.co/content/groups/aikar/" }
+    maven { url 'https://jitpack.io' }
+
+    maven { url 'https://mvn.lumine.io/repository/maven-public/' }
+    maven { url "https://repo.dmulloy2.net/repository/public/" }
+    maven { url "https://maven.enginehub.org/repo/" }
+
+    maven {
+        url = 'https://repo.extendedclip.com/content/repositories/placeholderapi/'
+    }
+    maven {
+        url 'https://repo.pcgamingfreaks.at/repository/maven-everything'
+    }
+}
+
+dependencies {
+    compileOnly "io.papermc.paper:paper-api:1.20.4-R0.1-SNAPSHOT"
+
+    implementation 'org.projectlombok:lombok:1.18.34'
+    annotationProcessor 'org.projectlombok:lombok:1.18.34'
+
+    implementation "co.aikar:acf-paper:0.5.1-SNAPSHOT"
+    // hikari
+    implementation 'com.zaxxer:HikariCP:6.0.0'
+
+}
+
+def targetJavaVersion = 21
+java {
+    def javaVersion = JavaVersion.toVersion(targetJavaVersion)
+    sourceCompatibility = javaVersion
+    targetCompatibility = javaVersion
+    if (JavaVersion.current() < javaVersion) {
+        toolchain.languageVersion = JavaLanguageVersion.of(targetJavaVersion)
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+
+    if (targetJavaVersion >= 10 || JavaVersion.current().isJava10Compatible()) {
+        options.release.set(targetJavaVersion)
+    }
+}
+
+processResources {
+    def props = [version: version]
+    inputs.properties props
+    filteringCharset 'UTF-8'
+    filesMatching('plugin.yml') {
+        expand props
+    }
+}
+shadowJar {
+    relocate 'co.aikar.commands', 'com.person98.acf'
+    relocate 'co.aikar.locales', 'com.person98.locales'
+
+    archiveClassifier.set('')
+    archiveFileName = 'PrismPack.jar'
+    configurations = [project.configurations.runtimeClasspath]
+    minimize() // Optional: minimize the JAR to exclude unused classes
+}
+
+tasks.build.dependsOn(shadowJar)

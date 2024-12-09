@@ -1,0 +1,27 @@
+mysql:
+  host: "localhost"
+  port: 3306
+  database: "database"
+  username: "root"
+  password: "password"
+  poolsize: 10
+
+sqlite:
+  enabled: true
+  path: "database.db"
+
+BackPackGUI:
+  name: "%player% <red> backpack"
+  sound:
+    name: "ENTITY_SHULKER_OPEN"
+    volume: 1.0
+    pitch: 1.0
+  close_sound:
+    name: "ENTITY_SHULKER_OPEN"
+    volume: 1.0
+    pitch: 1.0
+  cooldown: 30 # Cooldown in seconds
+  blocked-items:
+    - "SHULKER_BOX"
+    - "WHITE_SHULKER_BOX"
+    - "BLACK_SHULKER_BOX"

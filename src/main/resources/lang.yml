@@ -1,0 +1,10 @@
+messages:
+  onCooldown: "<red>You must wait <yellow>%time_left% seconds <red>before opening your backpack again."
+  openedBackpack: "<green>Opened your backpack."
+  noBackpack: "<red>You do not have a backpack."
+  cleanedBackpack: "<green>Your backpack has been cleaned."
+  cleanedOthersBackpack: "<green>Cleaned the backpack of %player%."
+  playerNotFound: "<red>Player not found."
+  blacklistedItem: "<red>You cannot store this item in your backpack."
+  openedBackpackOther: "<green>Opened the backpack of %player%."
+  reloadedConfig: "<green>Config reloaded."
