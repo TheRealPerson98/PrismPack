@@ -1,12 +1,15 @@
 package com.person98.prismPack.manager;
 
+import com.person98.prismPack.PrismPack;
 import com.person98.prismPack.util.ItemSerializationUtil;
 import org.bukkit.Bukkit;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 
 import java.sql.*;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Manages the storage and retrieval of player backpack inventories in the database.
@@ -40,6 +43,10 @@ public class BackpackManager {
             "FOREIGN KEY (owner) REFERENCES backpack_players(player_id)" +
             ")";
 
+    private static final Map<UUID, Inventory> backpackCache = new ConcurrentHashMap<>();
+    private static final Map<UUID, Long> lastAccessTime = new ConcurrentHashMap<>();
+    private static final long CACHE_EXPIRY_TIME = 1000 * 60 * 15; // 15 minutes
+
     /**
      * Initializes the database tables required for backpack storage.
      * Creates the backpack_players and backpacks tables if they don't exist.
@@ -65,84 +72,71 @@ public class BackpackManager {
     }
 
     /**
-     * Saves a player's backpack inventory to the database.
-     * Creates a new player entry if the UUID doesn't exist.
+     * Saves a player's backpack inventory to the database asynchronously.
      *
      * @param playerUUID The UUID of the player whose inventory is being saved
      * @param inventory The inventory contents to save
      */
     public static void saveInventory(UUID playerUUID, Inventory inventory) {
-        try (Connection connection = Database.getConnection()) {
+        backpackCache.put(playerUUID, inventory);
+        lastAccessTime.put(playerUUID, System.currentTimeMillis());
 
-            // Check if player exists in the backpack_players table
-            int playerId = getPlayerId(connection, playerUUID);
+        Bukkit.getScheduler().runTaskAsynchronously(PrismPack.getInstance(), () -> {
+            try (Connection connection = Database.getConnection()) {
+                int playerId = getPlayerId(connection, playerUUID);
+                if (playerId == -1) {
+                    String insertPlayerSQL = "INSERT INTO backpack_players (uuid) VALUES (?)";
+                    try (PreparedStatement ps = connection.prepareStatement(insertPlayerSQL, Statement.RETURN_GENERATED_KEYS)) {
+                        ps.setString(1, playerUUID.toString());
+                        ps.executeUpdate();
 
-            if (playerId == -1) {
-                // Insert new player if not found
-                String insertPlayerSQL = "INSERT INTO backpack_players (uuid) VALUES (?)";
-                try (PreparedStatement ps = connection.prepareStatement(insertPlayerSQL, Statement.RETURN_GENERATED_KEYS)) {
-                    ps.setString(1, playerUUID.toString());
+                        try (ResultSet generatedKeys = ps.getGeneratedKeys()) {
+                            if (generatedKeys.next()) {
+                                playerId = generatedKeys.getInt(1);
+                            }
+                        }
+                    }
+                }
+
+                ItemStack[] items = inventory.getContents();
+                String serializedInventory = ItemSerializationUtil.serializeInventory(items);
+
+                String upsertSQL = Database.isUsingSQLite() ?
+                        "INSERT OR REPLACE INTO backpacks (owner, itemstacks, lastupdate) VALUES (?, ?, ?)" :
+                        "INSERT INTO backpacks (owner, itemstacks, lastupdate) VALUES (?, ?, ?) " +
+                        "ON DUPLICATE KEY UPDATE itemstacks = VALUES(itemstacks), lastupdate = VALUES(lastupdate)";
+
+                try (PreparedStatement ps = connection.prepareStatement(upsertSQL)) {
+                    ps.setInt(1, playerId);
+                    ps.setString(2, serializedInventory);
+                    ps.setTimestamp(3, new Timestamp(System.currentTimeMillis()));
                     ps.executeUpdate();
-
-                    try (ResultSet generatedKeys = ps.getGeneratedKeys()) {
-                        if (generatedKeys.next()) {
-                            playerId = generatedKeys.getInt(1);
-                        }
-                    }
                 }
+            } catch (SQLException e) {
+                e.printStackTrace();
             }
-
-            // Serialize the inventory
-            ItemStack[] items = inventory.getContents();
-            String serializedInventory = ItemSerializationUtil.serializeInventory(items);
-
-            // Insert or update the backpack
-            String selectBackpackSQL = "SELECT owner FROM backpacks WHERE owner = ?";
-            try (PreparedStatement ps = connection.prepareStatement(selectBackpackSQL)) {
-                ps.setInt(1, playerId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next()) {
-                        // Update existing backpack
-                        String updateBackpackSQL = "UPDATE backpacks SET itemstacks = ?, lastupdate = ? WHERE owner = ?";
-                        try (PreparedStatement updatePs = connection.prepareStatement(updateBackpackSQL)) {
-                            updatePs.setString(1, serializedInventory);
-                            updatePs.setTimestamp(2, new Timestamp(System.currentTimeMillis()));
-                            updatePs.setInt(3, playerId);
-                            updatePs.executeUpdate();
-                        }
-                    } else {
-                        // Insert new backpack
-                        String insertBackpackSQL = "INSERT INTO backpacks (owner, itemstacks, lastupdate) VALUES (?, ?, ?)";
-                        try (PreparedStatement insertPs = connection.prepareStatement(insertBackpackSQL)) {
-                            insertPs.setInt(1, playerId);
-                            insertPs.setString(2, serializedInventory);
-                            insertPs.setTimestamp(3, new Timestamp(System.currentTimeMillis()));
-                            insertPs.executeUpdate();
-                        }
-                    }
-                }
-            }
-
-        } catch (SQLException e) {
-            e.printStackTrace();
-        }
+        });
     }
 
     /**
-     * Loads a player's backpack inventory from the database.
+     * Loads a player's backpack inventory, first checking cache then database.
      *
      * @param playerUUID The UUID of the player whose inventory should be loaded
      * @return The loaded inventory, or null if no inventory exists for the player
      */
     public static Inventory loadInventory(UUID playerUUID) {
-        try (Connection connection = Database.getConnection()) {
-
-            int playerId = getPlayerId(connection, playerUUID);
-
-            if (playerId == -1) {
-                // Player not found
-                return null;
+        Inventory cachedInventory = backpackCache.get(playerUUID);
+        if (cachedInventory != null) {
+            Long lastAccess = lastAccessTime.get(playerUUID);
+            if (lastAccess != null && System.currentTimeMillis() - lastAccess < CACHE_EXPIRY_TIME) {
+                lastAccessTime.put(playerUUID, System.currentTimeMillis());
+                return cachedInventory;
             }
+        }
+
+        try (Connection connection = Database.getConnection()) {
+            int playerId = getPlayerId(connection, playerUUID);
+            if (playerId == -1) return null;
 
             String selectBackpackSQL = "SELECT itemstacks FROM backpacks WHERE owner = ?";
             try (PreparedStatement ps = connection.prepareStatement(selectBackpackSQL)) {
@@ -153,15 +147,32 @@ public class BackpackManager {
                         ItemStack[] items = ItemSerializationUtil.deserializeInventory(serializedInventory);
                         Inventory inventory = Bukkit.createInventory(null, items.length);
                         inventory.setContents(items);
+                        
+                        backpackCache.put(playerUUID, inventory);
+                        lastAccessTime.put(playerUUID, System.currentTimeMillis());
+                        
                         return inventory;
                     }
                 }
             }
-
         } catch (SQLException e) {
             e.printStackTrace();
         }
         return null;
+    }
+
+    /**
+     * Cleans up expired cache entries. Should be called periodically.
+     */
+    public static void cleanupCache() {
+        long currentTime = System.currentTimeMillis();
+        lastAccessTime.entrySet().removeIf(entry -> {
+            if (currentTime - entry.getValue() > CACHE_EXPIRY_TIME) {
+                backpackCache.remove(entry.getKey());
+                return true;
+            }
+            return false;
+        });
     }
 
     /**
